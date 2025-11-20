@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Webhook Console</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main>
+    <section class="card">
+        <div>
+            <h1>AI COMIC</h1>
+            
+        </div>
+        <form id="aiForm">
+            <div>
+                <label for="webhookUrl">Webhook URL</label>
+                <input type="text" id="webhookUrl" name="webhookUrl" placeholder="http://localhost:8000/generate">
+               
+            </div>
+            <div>
+                <label for="userText">Nội dung gửi cho AI</label>
+                <textarea id="userText" name="userText" placeholder="Enter your story text…"></textarea>
+            </div>
+            <button type="submit" id="generateBtn">
+                Generate with AI
+            </button>
+        </form>
+    </section>
+    <section class="card">
+        <h2 style="margin: 0;">Kết quả phản hồi</h2>
+        <div class="result-box" id="resultBox">
+            <div class="flash" id="statusMessage">Chờ yêu cầu đầu tiên…</div>
+            <div id="resultContent" class="result-content"></div>
+            <div class="gallery-controls">
+                <label for="imageEndpoint">Endpoint GET lấy hình</label>
+                <div class="fetch-row">
+                    <input type="text" id="imageEndpoint" placeholder="http://localhost:8000/images">
+                    <button type="button" id="galleryBtn">Display Generated Images</button>
+                </div>
+                <p class="helper-text">Dùng để xem các file đã tạo trước đó hoặc khi cần tải lại.</p>
+            </div>
+            <div id="galleryGrid" class="gallery-grid"></div>
+        </div>
+    </section>
+</main>
+<script>
+    // Base webhook URL (can be overwritten via the input field above).
+    const DEFAULT_WEBHOOK_URL = "http://localhost:8000/generate";
+    const DEFAULT_IMAGE_WEBHOOK = "http://localhost:8000/images";
+    const STORAGE_KEY = "ai_webhook_url";
+    const STORAGE_KEY_IMAGE = "ai_image_webhook_url";
+
+    const refs = {
+        form: document.getElementById("aiForm"),
+        webhook: document.getElementById("webhookUrl"),
+        userText: document.getElementById("userText"),
+        button: document.getElementById("generateBtn"),
+        resultBox: document.getElementById("resultBox"),
+        statusMessage: document.getElementById("statusMessage"),
+        resultContent: document.getElementById("resultContent"),
+        imageEndpoint: document.getElementById("imageEndpoint"),
+        galleryBtn: document.getElementById("galleryBtn"),
+        galleryGrid: document.getElementById("galleryGrid"),
+    };
+    const defaultButtonLabel = refs.button.innerHTML;
+    const defaultGalleryButtonLabel = refs.galleryBtn.innerHTML;
+
+    const storedWebhook = localStorage.getItem(STORAGE_KEY);
+    refs.webhook.value = storedWebhook || DEFAULT_WEBHOOK_URL;
+
+    const storedImageEndpoint = localStorage.getItem(STORAGE_KEY_IMAGE);
+    refs.imageEndpoint.value = storedImageEndpoint || DEFAULT_IMAGE_WEBHOOK;
+
+    refs.webhook.addEventListener("change", () => {
+        localStorage.setItem(STORAGE_KEY, refs.webhook.value.trim());
+    });
+
+    refs.imageEndpoint.addEventListener("change", () => {
+        localStorage.setItem(STORAGE_KEY_IMAGE, refs.imageEndpoint.value.trim());
+    });
+
+    function setLoading(isLoading) {
+        refs.button.disabled = isLoading;
+        refs.button.innerHTML = isLoading ? "Generating..." : defaultButtonLabel;
+    }
+
+    function setGalleryLoading(isLoading) {
+        refs.galleryBtn.disabled = isLoading;
+        refs.galleryBtn.innerHTML = isLoading ? "Đang tải..." : defaultGalleryButtonLabel;
+    }
+
+    function showStatus(type, message) {
+        refs.statusMessage.className = type === "error" ? "flash error" : "flash";
+        refs.statusMessage.textContent = message;
+        refs.statusMessage.hidden = false;
+    }
+
+    function renderImages(urls) {
+        const grid = document.createElement("div");
+        grid.className = "image-grid";
+        urls.forEach((url) => {
+            const img = document.createElement("img");
+            img.src = url;
+            img.alt = "AI generated";
+            grid.appendChild(img);
+        });
+        return grid;
+    }
+
+    function renderResult(payload) {
+        refs.resultContent.innerHTML = "";
+
+        const infoBlock = document.createElement("div");
+        infoBlock.className = "result-text";
+
+        if (payload.prompt_used) {
+            const promptLine = document.createElement("p");
+            promptLine.className = "info-line";
+            promptLine.textContent = `Prompt: ${payload.prompt_used}`;
+            infoBlock.appendChild(promptLine);
+        }
+
+        if (payload.file_path) {
+            const pathLine = document.createElement("p");
+            pathLine.className = "info-line";
+            pathLine.textContent = `File đã lưu: ${payload.file_path}`;
+            infoBlock.appendChild(pathLine);
+        }
+
+        if (!infoBlock.children.length) {
+            const fallback = document.createElement("p");
+            fallback.className = "info-line";
+            fallback.textContent = payload.message || JSON.stringify(payload, null, 2);
+            infoBlock.appendChild(fallback);
+        }
+        refs.resultContent.appendChild(infoBlock);
+
+        if (payload.image_url) {
+            const preview = document.createElement("img");
+            preview.className = "primary-image";
+            preview.src = payload.image_url;
+            preview.alt = "Generated comic panel";
+            refs.resultContent.appendChild(preview);
+        }
+
+        showStatus("info", "Webhook response received.");
+    }
+
+    function renderGallery(items) {
+        refs.galleryGrid.innerHTML = "";
+        if (!items.length) {
+            const empty = document.createElement("p");
+            empty.className = "helper-text";
+            empty.textContent = "Chưa có hình nào trong thư mục generated.";
+            refs.galleryGrid.appendChild(empty);
+            return;
+        }
+
+        items.forEach((item) => {
+            const card = document.createElement("div");
+            card.className = "gallery-card";
+
+            const img = document.createElement("img");
+            img.src = item.image_url || item.url;
+            img.alt = item.file_path || "generated image";
+            card.appendChild(img);
+
+            const caption = document.createElement("small");
+            caption.textContent = item.file_path || "image";
+            card.appendChild(caption);
+
+            refs.galleryGrid.appendChild(card);
+        });
+    }
+
+    async function loadGallery({ silent = false } = {}) {
+        const endpoint = refs.imageEndpoint.value.trim() || DEFAULT_IMAGE_WEBHOOK;
+        localStorage.setItem(STORAGE_KEY_IMAGE, endpoint);
+        if (!silent) {
+            setGalleryLoading(true);
+            showStatus("info", "Đang tải danh sách hình đã tạo...");
+        }
+
+        try {
+            const response = await fetch(endpoint, { method: "GET" });
+            if (!response.ok) {
+                throw new Error(`GET endpoint returned ${response.status}`);
+            }
+            const data = await response.json();
+            const normalized = Array.isArray(data) ? data : [];
+            renderGallery(normalized);
+            if (!silent) {
+                showStatus("info", "Đã cập nhật danh sách hình.");
+            }
+        } catch (error) {
+            console.error("Gallery error", error);
+            if (!silent) {
+                showStatus("error", "Không lấy được danh sách hình.");
+            }
+        } finally {
+            if (!silent) {
+                setGalleryLoading(false);
+            }
+        }
+    }
+
+    refs.galleryBtn.addEventListener("click", () => loadGallery());
+
+    refs.form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const userText = refs.userText.value.trim();
+        const webhookUrl = refs.webhook.value.trim() || DEFAULT_WEBHOOK_URL;
+
+        if (!userText) {
+            showStatus("error", "Please enter text before sending.");
+            return;
+        }
+
+        // Persist latest URL so the user doesn't have to retype it.
+        localStorage.setItem(STORAGE_KEY, webhookUrl);
+
+        setLoading(true);
+        showStatus("info", "Generating response...");
+
+        try {
+            // Send user text to FastAPI POST endpoint in JSON payload.
+            const response = await fetch(webhookUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ text: userText }),
+            });
+
+            // If webhook returns error status, throw to activate catch branch.
+            if (!response.ok) {
+                throw new Error(`Webhook returned ${response.status}`);
+            }
+
+            // Parse JSON reply; assume format like { result: "...", image_url?: "" }.
+            const data = await response.json();
+            renderResult(data);
+            loadGallery({ silent: true });
+        } catch (error) {
+            console.error("Webhook error", error);
+            showStatus("error", "Something went wrong! Please try again.");
+        } finally {
+            setLoading(false);
+        }
+    });
+
+    // Load gallery snapshot on first load
+    loadGallery({ silent: true });
+</script>
+</body>
+</html>
+
